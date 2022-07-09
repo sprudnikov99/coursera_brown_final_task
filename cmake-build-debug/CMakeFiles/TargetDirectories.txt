@@ -1,0 +1,3 @@
+/Users/sprudnikov99/CLionProjects/bus_manager/cmake-build-debug/CMakeFiles/rebuild_cache.dir
+/Users/sprudnikov99/CLionProjects/bus_manager/cmake-build-debug/CMakeFiles/edit_cache.dir
+/Users/sprudnikov99/CLionProjects/bus_manager/cmake-build-debug/CMakeFiles/bus_manager.dir
