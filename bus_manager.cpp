@@ -12,6 +12,11 @@ static constexpr auto kUsualDelim = '-';
 
 namespace bus_manager{
     namespace{
+        inline size_t GetNextStopId(const std::unordered_map<string, StopPtr>& stop_index)
+        {
+            return stop_index.size();
+        }
+
         string_view RemoveBoundarySpaces(string_view& view)
         {
             const auto first_pos = view.find_first_not_of(' ');
@@ -20,41 +25,43 @@ namespace bus_manager{
             return view.substr(first_pos, last_pos - first_pos + 1);
         }
 
-        std::vector<string> RetrieveStationsByDelim(string_view&& view, const char delim)
+        StopPtr GetOrCreateStop(std::unordered_map<string, StopPtr>& stop_index, std::string&& name)
         {
-            std::vector<string> result;
+            const auto stop_it = stop_index.find(name);
+
+            if(stop_it != stop_index.end())
+            {
+                return stop_it->second;
+            }
+
+            const size_t stop_id = GetNextStopId(stop_index);
+            auto stop_ptr = std::make_shared<Stop>(Stop{stop_id, name});
+
+            stop_index[std::move(name)] = stop_ptr;
+
+            return stop_ptr;
+        }
+
+        std::vector<StopPtr> RetrieveStationsByDelim(std::unordered_map<string, StopPtr>& stop_index, string_view&& view, const char delim)
+        {
+            std::vector<StopPtr> result;
 
             auto pos = view.find(delim);
             while(pos != string::npos)
             {
-                auto item = view.substr(0, pos);
-                item = RemoveBoundarySpaces(item);
-                result.emplace_back(string(item));
+                auto name = view.substr(0, pos);
+                name = RemoveBoundarySpaces(name);
+
+                result.emplace_back(GetOrCreateStop(stop_index, std::string(name)));
 
                 view.remove_prefix(pos + 1);
                 pos = view.find(delim);
             }
 
-            auto item = RemoveBoundarySpaces(view);
-            result.emplace_back(string(item));
+            const auto name = RemoveBoundarySpaces(view);
+            result.emplace_back(GetOrCreateStop(stop_index, std::string(name)));
 
             return result;
-        }
-
-        void ParseBusValue(Bus& bus, string&& value)
-        {
-            char delim;
-            if(value.find(kCircleDelim) != string::npos)
-            {
-                bus.cycled = true;
-                delim = kCircleDelim;
-            }
-            else
-            {
-                bus.cycled = false;
-                delim = kUsualDelim;
-            }
-            bus.stop_names = RetrieveStationsByDelim(string_view(value), delim);
         }
 
         std::string ReadUntil(std::istream &input, const char delim) {
@@ -64,11 +71,12 @@ namespace bus_manager{
 
             char ch;
             while (security_counter) {
-                ch = input.get();
-                if (ch == delim || input.eof()) {
+                ch = input.peek();
+                if (ch == delim || ch == '\n' || input.eof()) {
                     break;
                 } else {
                     result.push_back(ch);
+                    input.ignore(1);
                 }
                 security_counter--;
             }
@@ -89,7 +97,35 @@ namespace bus_manager{
             return d;
         }
 
-        double CalculateRouteLength(const vector<StopPtr>& stops, cache::Cache& cache)
+        size_t CalculateRealRouteLength(const vector<StopPtr>& stops, cache::Cache& cache)
+        {
+            if(stops.size() <= 1)
+            {
+                return 0u;
+            }
+
+            size_t total_distance = 0;
+            for(size_t i = 0; i < stops.size() - 1; i++)
+            {
+                const auto& from = stops[i];
+                const auto& to = stops[i + 1];
+
+                cout<< "Calculate route from: " << from->name << " to: " << to->name <<endl;
+                const auto cache_distance = cache.GetTwoStopsRealDistance(from->id, to->id);
+
+                if(cache_distance.has_value())
+                {
+                    total_distance += cache_distance.value();
+//                    cout << "Get distance from "<< from->id <<": " << from->name << " <-> " << to->id <<": " << to->name << " from cache : " << cache_distance.value() << endl;
+                    continue;
+                }
+                throw std::runtime_error("There is no information about real rout length between: " + from->name + string(" to ") + to->name);
+            }
+
+            return total_distance;
+        }
+
+        double CalculateDirectRouteLength(const vector<StopPtr>& stops, cache::Cache& cache)
         {
             if(stops.size() <= 1)
             {
@@ -103,7 +139,7 @@ namespace bus_manager{
                 const auto& to = stops[i + 1];
 
 //                cout<< "Calculate route from: " << from->name << " to: " << to->name <<endl;
-                const auto cache_distance = cache.GetTwoStopsDistance(from->id, to->id);
+                const auto cache_distance = cache.GetTwoStopsDirectDistance(from->id, to->id);
 
                 if(cache_distance.has_value())
                 {
@@ -116,7 +152,7 @@ namespace bus_manager{
 
 //                cout << "Calculate distance from "<< from->id <<": " << from->name << " <-> " << to->id <<": " << to->name << "  distanse " << calculated_distance << endl;
 
-                cache.UpdateTwoStopsDistance(from->id, to->id, calculated_distance);
+                cache.UpdateTwoStopsDirectDistance(from->id, to->id, calculated_distance);
 
                 total_distance += calculated_distance;
             }
@@ -124,25 +160,48 @@ namespace bus_manager{
             return total_distance;
         }
 
-        double GetRouteLength(const Bus& bus, cache::Cache& cache)
+        size_t GetRealRouteLength(const Bus& bus, cache::Cache& cache)
         {
-            const auto cache_value = cache.GetBusRouteLength(bus.number);
+            const auto cache_value = cache.GetBusRealRouteLength(bus.number);
             if(cache_value.has_value())
             {
-//                cout << "GetRouteLength: Bus: " << bus.number << " Get value from cache: " << *cache_value << endl;
+                cout << "GetDirectRouteLength: Bus: " << bus.number << " Get value from cache: " << *cache_value << endl;
                 return cache_value.value();
             }
 
 //            cout << "bus stops num: " << bus.stops.size() << endl;
-            auto calculated_value = CalculateRouteLength(bus.stops, cache);
+            auto calculated_value = CalculateRealRouteLength(bus.stops, cache);
+            if(!bus.cycled)
+            {
+                calculated_value *= 2;
+            }
+
+//            cout << "GetDirectRouteLength: Bus: " << bus.number << " calculate value: " << *cache_value << endl;
+
+            cache.UpdateBusRealRouteLength(bus.number, calculated_value);
+
+            return calculated_value;
+        }
+
+        double GetDirectRouteLength(const Bus& bus, cache::Cache& cache)
+        {
+            const auto cache_value = cache.GetBusDirectRouteLength(bus.number);
+            if(cache_value.has_value())
+            {
+//                cout << "GetDirectRouteLength: Bus: " << bus.number << " Get value from cache: " << *cache_value << endl;
+                return cache_value.value();
+            }
+
+//            cout << "bus stops num: " << bus.stops.size() << endl;
+            auto calculated_value = CalculateDirectRouteLength(bus.stops, cache);
             if(!bus.cycled)
             {
                 calculated_value *= 2.0;
             }
 
-//            cout << "GetRouteLength: Bus: " << bus.number << " calculate value: " << *cache_value << endl;
+//            cout << "GetDirectRouteLength: Bus: " << bus.number << " calculate value: " << *cache_value << endl;
 
-            cache.UpdateBusRouteLength(bus.number, calculated_value);
+            cache.UpdateBusDirectRouteLength(bus.number, calculated_value);
 
             return calculated_value;
         }
@@ -198,6 +257,8 @@ namespace bus_manager{
                     type = EQueryType::EStopInfo;
                     input.ignore(1);
                     string value = ReadUntil(input, '\n');
+                    input.ignore(1);
+
                     queries.push_back({type, 0, std::move(value)});
                 }
 
@@ -282,10 +343,10 @@ namespace bus_manager{
 
         cout << std::setprecision(6) << "Bus " << bus_id << " : " << bus_info.stops_num
         << " stops on route, " << bus_info.unique << " unique stops, "
-        << bus_info.length << " route length\n";
+        << bus_info.length << " route length, " << bus_info.curvature << " curvature\n";
     }
 
-    void BusManager::ReadBaseQueries(std::istream &input, size_t query_num) {
+    void BusManager::ReadAddQueries(std::istream &input, size_t query_num) {
         for(int i = 0; i < query_num; i++)
         {
             // process line
@@ -309,36 +370,20 @@ namespace bus_manager{
         }
     }
 
-
-    void BusManager::ReadStop(std::istream &input) {
-        Stop stop{};
-
-        stop.name = ReadUntil(input, ':');
-
-        input >> stop.latitude;
-        input.ignore(1); //ignore ','
-        input >> stop.longitude;
-
-//        std::cout << "Stop " << stop.name << " la: " << stop.latitude << " lo: " << stop.longitude << " was added" <<std::endl;
-
-        ReadUntil(input, '\n').size();
-
-        AddStop(move(stop));
-    }
-
-    void BusManager::AddStop(Stop&& stop) {
-        stop.id = m_stops_index.size();
-        stop.latitude *= kPi / 180;
-        stop.longitude *= kPi / 180;
-
-        auto stop_ptr = make_shared<const Stop>(move(stop));
-        auto name = stop_ptr->name;
-
-        m_stops_index[std::move(name)] = std::move(stop_ptr);
-    }
-
-    void BusManager::AddBus(Bus&& bus) {
-        m_busses[bus.number] = move(bus);
+    void BusManager::ParseBusValue(Bus& bus, string&& value)
+    {
+        char delim;
+        if(value.find(kCircleDelim) != string::npos)
+        {
+            bus.cycled = true;
+            delim = kCircleDelim;
+        }
+        else
+        {
+            bus.cycled = false;
+            delim = kUsualDelim;
+        }
+        bus.stops = RetrieveStationsByDelim(m_stops_index, string_view(value), delim);
     }
 
     void BusManager::ReadBus(std::istream &input) {
@@ -346,38 +391,92 @@ namespace bus_manager{
         input >> bus.number;
         input.ignore(2); // ignore ':' and space
         string value = ReadUntil(input, '\n');
+        input.ignore(1);
         // now bus filled with stop names and cycled
         ParseBusValue(bus, std::move(value));
 
-//        string bus_stations{};
-//        for(auto& station: bus.stop_names)
-//        {
-//            bus_stations += station;
-//            bus_stations += ", ";
-//        }
-//        std::cout << "Bus " << bus.number << " stations: " << bus_stations << std::endl;
-
         AddBus(std::move(bus));
+    }
+
+    //TODO remove after test
+    struct Distance
+    {
+        string to;
+        size_t distance;
+    };
+
+    void BusManager::ReadStopDistances(std::istream &input, size_t stop_id)
+    {
+        if(input.eof() || input.get() != ',')
+        {
+            return;
+        }
+
+        vector<Distance> tests{};
+
+        while(true)
+        {
+            size_t distance;
+            input >> distance;
+
+            input.ignore(5);
+
+            auto destination_name = ReadUntil(input, ',');
+
+            tests.push_back({destination_name, distance});
+            auto destination_stop_ptr = GetOrCreateStop(m_stops_index, std::move(destination_name));
+
+            m_cache.UpdateTwoStopsRealDistance(stop_id, destination_stop_ptr->id, distance);
+
+            if(input.eof() || input.get() != ',')
+            {
+                break;
+            }
+        }
+
+        for(auto tst: tests)
+        {
+            cout << "To: " << tst.to << " d: " << tst.distance << endl;
+        }
+        cout << endl;
+    }
+
+    void BusManager::ReadStop(std::istream &input) {
+        Stop stop{};
+
+        stop.name = ReadUntil(input, ':');
+        input.ignore(1);
+
+        input >> stop.latitude;
+        input.ignore(1); //ignore ','
+        input >> stop.longitude;
+
+//        std::cout << "Stop " << stop.name << " la: " << stop.latitude << " lo: " << stop.longitude << " was added" <<std::endl;
+
+        cout << endl << stop.name << endl;
+        const auto stop_id = AddStop(move(stop));
+        ReadStopDistances(input, stop_id);
+    }
+
+    size_t BusManager::AddStop(Stop&& stop) {
+        static constexpr double kDelimiter = kPi / 180;
+
+        auto stop_ptr = GetOrCreateStop(m_stops_index, std::move(stop.name));
+
+        stop_ptr->latitude = stop.latitude * kDelimiter;
+        stop_ptr->longitude = stop.longitude * kDelimiter;
+
+        return stop_ptr->id;
+    }
+
+    void BusManager::AddBus(Bus&& bus) {
+        m_busses[bus.number] = move(bus);
     }
 
     void BusManager::ConnectStations()
     {
         for(auto& [bus_id, bus]: m_busses)
         {
-            bus.stops.reserve(bus.stop_names.size());
-            for(const auto& stop_name: bus.stop_names)
-            {
-                const auto it = m_stops_index.find(stop_name);
-                if(it != m_stops_index.end())
-                {
-                    bus.stops.push_back(it->second);
-                }
-                else
-                {
-                    throw std::runtime_error("Unknown in stops_index stop_name: " + stop_name);
-                }
-            }
-
             for(const auto& stop: bus.stops)
             {
                 m_cache.UpdateUniqueBusesWithStop(stop->id, bus.number);
@@ -391,11 +490,19 @@ namespace bus_manager{
         info.stops_num = bus.cycled ? bus.stops.size() : (bus.stops.size() * 2 - 1);
 //        cout << "GetBusInfo: bus: " << bus.number << " stops_num: " << info.stops_num << endl;
 
-        info.length = GetRouteLength(bus, m_cache);
-//        cout << "GetBusInfo: bus: " << bus.number << " route_length: " << info.length << endl;
-
         info.unique = GetUniqueStops(bus, m_cache);
 //        cout << "GetBusInfo: bus: " << bus.number << " unique_stops: " << info.unique << endl;
+
+        const auto direct_length = GetDirectRouteLength(bus, m_cache);
+//        cout << "GetBusInfo: bus: " << bus.number << " direct_length: " << info.direct_length << endl;
+
+
+        const auto real_length = GetRealRouteLength(bus, m_cache);
+        info.length = real_length;
+//        cout << "GetBusInfo: bus: " << bus.number << " real_length: " << info.direct_length << endl;
+
+        info.curvature = static_cast<double>(real_length) / direct_length;
+//        cout << "GetBusInfo: bus: " << bus.number << " curvature: " << info.curvature << endl;
 
         return info;
     }

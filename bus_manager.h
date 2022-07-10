@@ -12,7 +12,8 @@ namespace bus_manager
     {
         size_t stops_num;
         size_t unique;
-        double length;
+        size_t length;
+        double curvature;
     };
 
     class BusManager
@@ -20,17 +21,19 @@ namespace bus_manager
     public:
         BusManager();
 
-        void ReadBaseQueries(std::istream& input, size_t query_num);
+        void ReadAddQueries(std::istream& input, size_t query_num);
         void ProcessSearchQueries(std::istream& input, size_t query_num);
 
 
         void ConnectStations();
     private:
         void ReadBus(std::istream &input);
+        void ParseBusValue(Bus& bus, string&& value);
         void AddBus(Bus&& bus);
 
         void ReadStop(std::istream &input);
-        void AddStop(Stop&& stop);
+        size_t AddStop(Stop&& stop);
+        void ReadStopDistances(std::istream &input, size_t stop_id);
 
 
         void PrintBusInfo(BusId bus_id);
